@@ -1,0 +1,118 @@
+from pycaret.classification import (
+    setup, compare_models, tune_model,
+    finalize_model, plot_model, predict_model, save_model
+)
+import pandas as pd
+import warnings
+warnings.filterwarnings('ignore')
+
+data = pd.read_csv(r"d:\perso_pro\healthcare_analysis\healthcare_prediction_dataset.csv")
+
+data.columns = data.columns.str.strip()
+
+print("\n✅ Data Loaded Successfully")
+print("Shape:", data.shape)
+print("\nColumns:\n", data.columns.tolist())
+print("\nSample Data:\n", data.head(3))
+
+drop_cols = [
+    'visit_id', 'patient_id', 'doctor_id',   # IDs — no signal
+    'visit_date', 'registration_date',         # Dates — not useful as-is
+    'high_bp_flag', 'high_glucose_flag',       # LEAKAGE: derived flags
+    'obese_flag', 'age_group',                 # LEAKAGE: derived from BMI/age
+    'risk_score'                               # LEAKAGE: encodes outcome directly
+]
+
+data = data.drop(columns=drop_cols, errors='ignore')
+print("\n✅ Leakage Columns Dropped")
+
+print("\nDiagnosis Distribution:\n", data['diagnosis'].value_counts())
+
+
+SERIOUS_CONDITIONS = {'diabetes', 'hypertension', 'heart disease'}
+
+def map_target(x):
+    return 1 if str(x).strip().lower() in SERIOUS_CONDITIONS else 0
+
+data['target'] = data['diagnosis'].apply(map_target)
+data = data.drop(columns=['diagnosis'])
+
+print("\n✅ Target Variable Created")
+print("Target Distribution:\n", data['target'].value_counts())
+print("Class Balance (%):\n", data['target'].value_counts(normalize=True).mul(100).round(1))
+
+n_classes = data['target'].nunique()
+assert n_classes >= 2, (
+    f"\n❌ Target has only {n_classes} class. Both 0 and 1 must exist.\n"
+    f"Values found: {data['target'].unique()}\n"
+    f"Hint: print data['diagnosis'].value_counts() to see what is in your CSV."
+)
+print(f"✅ Class check passed: {n_classes} classes found")
+
+if 'systolic_bp' in data.columns and 'diastolic_bp' in data.columns:
+    data['bp_ratio'] = data['systolic_bp'] / data['diastolic_bp'].replace(0, pd.NA)
+
+if 'bmi' in data.columns and 'age' in data.columns:
+    data['bmi_age'] = data['bmi'] * data['age']
+
+print("\n✅ Feature Engineering Done")
+print("Final columns:", data.columns.tolist())
+
+print("\n⏳ Setting up PyCaret...")
+
+clf = setup(
+    data=data,
+    target='target',
+    session_id=123,
+    normalize=True,
+    fix_imbalance=True,
+    categorical_features=['gender', 'city'],
+    verbose=False
+)
+
+print("✅ PyCaret Setup Complete")
+
+print("\n⏳ Comparing Models (this may take a few minutes)...")
+
+best_model = compare_models(
+    fold=5,
+    sort='AUC',
+    n_select=1
+)
+
+print("\n✅ Best Model:\n", best_model)
+
+print("\n⏳ Tuning Best Model...")
+
+tuned_model = tune_model(
+    best_model,
+    fold=5,
+    optimize='AUC'
+)
+
+print("\n✅ Tuning Complete")
+
+final_model = finalize_model(tuned_model)
+print("\n✅ Model Finalized")
+
+print("\n⏳ Generating Evaluation Plots...")
+
+for plot_name in ['confusion_matrix', 'auc', 'feature']:
+    try:
+        plot_model(tuned_model, plot=plot_name, save=True)
+        print(f"  ✅ Plot saved: {plot_name}")
+    except Exception as e:
+        print(f"  ⚠️  Could not generate '{plot_name}' plot: {e}")
+
+predictions = predict_model(tuned_model)
+
+print("\n✅ Predictions Sample:")
+print(predictions[['target', 'prediction_label', 'prediction_score']].head(10))
+
+save_model(final_model, 'healthcare_model_final')
+
+print("\n" + "="*55)
+print("✅ PIPELINE COMPLETE — Model saved as 'healthcare_model_final'")
+print("="*55)
+
+predictions.to_csv("predictions.csv", index=False)
